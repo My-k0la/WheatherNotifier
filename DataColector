@@ -1,0 +1,90 @@
+import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from apscheduler.schedulers.blocking import BlockingScheduler
+from dotenv import load_dotenv
+import os
+
+# Завантаження конфігурації з .env файлу
+load_dotenv()
+
+# Константи
+API_KEY = os.getenv("CLIMACELL_API_KEY")
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL")
+CITY = os.getenv("CITY")  # Назва міста
+
+# Функція для отримання координат за назвою міста
+def get_coordinates(city):
+    geocoding_url = f"http://api.openweathermap.org/geo/1.0/direct"
+    params = {
+        "q": city,
+        "limit": 1,
+        "appid": API_KEY
+    }
+
+    response = requests.get(geocoding_url, params=params)
+    response.raise_for_status()
+    data = response.json()
+
+    if not data:
+        raise ValueError("Місто не знайдено")
+
+    return data[0]['lat'], data[0]['lon']
+
+# Функція для отримання прогнозу погоди через Climacell API
+def get_weather():
+    lat, lon = get_coordinates(CITY)
+    url = f"https://api.tomorrow.io/v4/timelines"
+    params = {
+        "location": f"{lat},{lon}",
+        "fields": ["temperature", "weatherCode", "humidity"],
+        "timesteps": "1d",
+        "units": "metric",
+        "apikey": API_KEY
+    }
+
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    data = response.json()
+
+    # Парсинг відповіді
+    daily_forecast = data['data']['timelines'][0]['intervals'][0]['values']
+    temperature = daily_forecast['temperature']
+    weather_code = daily_forecast['weatherCode']
+    humidity = daily_forecast['humidity']
+
+    return f"Прогноз погоди для міста {CITY}:
+Температура: {temperature}°C\nСтан: {weather_code}\nВологість: {humidity}%"
+
+# Функція для відправлення email
+def send_email(weather_report):
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_ADDRESS
+    msg['To'] = RECIPIENT_EMAIL
+    msg['Subject'] = "Щоденний прогноз погоди"
+
+    # Додавання тексту до листа
+    msg.attach(MIMEText(weather_report, "plain"))
+
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.send_message(msg)
+
+# Основна функція для отримання та надсилання погоди
+def daily_weather_email():
+    try:
+        weather_report = get_weather()
+        send_email(weather_report)
+        print("Лист успішно надіслано!")
+    except Exception as e:
+        print(f"Сталася помилка: {e}")
+
+# Планувальник для виконання задачі щодня о 8:00 ранку
+scheduler = BlockingScheduler()
+scheduler.add_job(daily_weather_email, 'cron', hour=8, minute=0)
+
+print("Програма запущена! Чекаємо щоденних оновлень...")
+scheduler.start()
